@@ -20,9 +20,9 @@ This repository contains code and data for analyzing upper limb use in healthy i
 │   ├── approach1_left.ipynb    # Notebook containing code for running limb-specific model for healthy left limb  
 │   └── approach1_generic.ipynb # Notebook containing code for running generic model containing both stroke and healthy limb data 
    
-├── approach2/                  # Second modeling approach (same structure as in approach1)
-├── approach3a/                 # Third modeling approach (variant a) (same structure as in approach1)
-├── approach3b/                 # Third modeling approach (variant b) (same structure as in approach1)
+├── approach2/                  # Second approach (same structure as in approach1)
+├── approach3a/                 # Third approach (variant a) (same structure as in approach1)
+├── approach3b/                 # Third approach (variant b) (same structure as in approach1)
 └── README.md                   # Documentation
 ```
 ### Usage
