@@ -23,6 +23,7 @@ This repository contains code and data for analyzing upper limb use in healthy i
 ├── approach2/                  # Second approach (same structure as in approach1)
 ├── approach3a/                 # Third approach (variant a) (same structure as in approach1)
 ├── approach3b/                 # Third approach (variant b) (same structure as in approach1)
+├── results/                    # Contains Youden index values from all schemes, and stats results.
 └── README.md                   # Documentation
 ```
 ### Usage
