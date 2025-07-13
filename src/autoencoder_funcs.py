@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 def get_callbacks():
     return [
             tf.keras.callbacks.EarlyStopping(monitor='val_loss', 
-                                             patience=3, 
+                                             patience=10, 
                                              restore_best_weights=True, 
                                              verbose=0),
             tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', 

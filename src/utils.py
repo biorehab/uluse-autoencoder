@@ -9,8 +9,11 @@ from sklearn.decomposition import PCA
 from scipy import stats
 from autoencoder import build_autoencoder
 from autoencoder_funcs import train_model_with_class_loss, train_model_without_class_loss, calculate_threshold, compute_mae, compute_mse
-from plot import plot_training_history
+from plot import plot_training_history, plot_roc, plot_ensemble_loss
+from sklearn.metrics import confusion_matrix, roc_curve, auc
 from metrics import youden_index
+from sklearn.metrics import RocCurveDisplay
+
 
 #For approach 1, random forest on latent space
 def run_rf(encoder, X_train, X_test, y_train):
@@ -19,7 +22,7 @@ def run_rf(encoder, X_train, X_test, y_train):
     clf = RandomForestClassifier(random_state=42)
     clf.fit(latent_train, y_train.ravel())
     y_pred = clf.predict(latent_test)
-    return y_pred
+    return y_pred, clf
 
 #For approach 2, 3a, 3b, get the func to calculate error
 def get_error_function(loss_fn):
@@ -92,15 +95,21 @@ def process_fold(X_train, X_test, y_train, y_test, subjects, limbs, train_idx, t
                                                  epochs, 
                                                  batch_size)
 
-    # if plot_hist:
-    #     plot_training_history(history)
+    if plot_hist:
+        plot_training_history(history)
 
     error_func = get_error_function(hp['loss'])
     if approach == 1:
-        y_pred = run_rf(encoder, 
+        y_pred, rf_model = run_rf(encoder, 
                         X_train, 
                         X_test, 
                         y_train)
+        #plotting ROC curve
+        X_encoded = encoder.predict(X_test, verbose=0)
+        y_scores = rf_model.predict_proba(X_encoded)[:,1]
+        fpr, tpr, _ = roc_curve(y_test, y_scores)
+        roc_auc = auc(fpr, tpr)
+        plot_roc(fpr, tpr, roc_auc)
     elif approach == 2:
         recon_train = error_func(X_train, 
                                  model.predict(X_train, verbose=0))
@@ -109,7 +118,7 @@ def process_fold(X_train, X_test, y_train, y_test, subjects, limbs, train_idx, t
         threshold = calculate_threshold(recon_train, 
                                         y_train)
         y_pred = (recon_test <= threshold).astype(int)
-    return y_test, y_pred, subject_ids_test, limb_ids_test
+    return y_test, y_pred, subject_ids_test, limb_ids_test, model, encoder, rf_model
 
 #for train-test evaluation after finding best mean val score: process fold for approach 3a
 def process_fold3a(X_train, X_test, y_train, y_test, subjects, limbs, train_idx, test_idx, 
@@ -176,8 +185,7 @@ def process_fold3a(X_train, X_test, y_train, y_test, subjects, limbs, train_idx,
         recon_error_1 = compute_mae(X_test, 
                                     model1.predict(X_test, verbose=0))
     if plot_hist: 
-        plot_training_history(history0)
-        plot_training_history(history1)
+        plot_ensemble_loss([history0, history1])
 
     y_pred = (recon_error_1 < recon_error_0).astype(int)
     return y_test, y_pred, subject_ids_test, limb_ids_test
@@ -246,6 +254,8 @@ def process_fold3b(X_train, X_test, y_train, y_test, subjects, limbs, usetypes, 
             recon_error = compute_mae(X_test, 
                                       autoencoder.predict(X_test, verbose=0))
             recon_errors.append(recon_error)
+    if plot_hist:
+        plot_ensemble_loss(list(history_list.values()))
 
     recon_errors = np.array(recon_errors)
     min_error_idx = np.argmin(recon_errors, axis=0)
@@ -265,12 +275,13 @@ def run_nested_cv(window_size, X, y, subjects, limbs, architecture, hp_grid, epo
         y_train_val, y_test = y.iloc[train_val_idx], y.iloc[test_idx]
         subjects_train_val = subjects.iloc[train_val_idx]
         limbs_train_val = limbs.iloc[train_val_idx]
+        
 
         best_score = -np.inf
         best_hp = None
 
         for hp_set in ParameterGrid(hp_grid):
-            current_score = validate_hyperparameters(X_train_val, 
+            current_score, model, encoder, rf_model = validate_hyperparameters(X_train_val, 
                                                      y_train_val, 
                                                      subjects_train_val, 
                                                      limbs_train_val,
@@ -288,7 +299,7 @@ def run_nested_cv(window_size, X, y, subjects, limbs, architecture, hp_grid, epo
                 best_hp = hp_set
                 print(f"New best HP found: {hp_set} with score: {current_score:.3f}")
 
-        y_true, y_pred, test_subjects, test_limbs = process_fold(X_train_val, 
+        y_true, y_pred, test_subjects, test_limbs, model, encoder, rf_model = process_fold(X_train_val, 
                                                                  X_test, 
                                                                  y_train_val, 
                                                                  y_test,
@@ -305,27 +316,33 @@ def run_nested_cv(window_size, X, y, subjects, limbs, architecture, hp_grid, epo
                                                                  plot_hist, 
                                                                  approach, 
                                                                  error_func)
+   
 
         for subject in np.unique(test_subjects):
             for limb in np.unique(test_limbs):
                 mask = (test_subjects == subject) & (test_limbs == limb)
                 if np.sum(mask) > 0:
                     sens, spec, yi = youden_index(y_true[mask], y_pred[mask])
+                    conf_matrix = confusion_matrix(y_true[mask], y_pred[mask])
+
                     print(f"Limb: {limb}",
                           f"Subject: {subject}",
                           f"Youden Index: {yi}",
                           f"Sensitivity: {sens}",
-                          f"Specificity: {spec}")
+                          f"Specificity: {spec}",
+                          
+                          )
                     all_results.append({
                         'subject': subject,
                         'limb': limb,
                         'youden_index': yi,
                         'sensitivity': sens,
                         'specificity': spec,
+                        'confusion_matrix': conf_matrix,
                         'hyperparameters': best_hp
                     })
 
-    return pd.DataFrame(all_results)
+    return pd.DataFrame(all_results), model, encoder, rf_model
 
 
 #function for nested cross validation for approach 3a
@@ -383,6 +400,7 @@ def run_nested_cv_3a(window_size, X, y, subjects, limbs, architecture, hp_grid, 
                 mask = (test_subjects == subject) & (test_limbs == limb)
                 if np.sum(mask) > 0:
                     sens, spec, yi = youden_index(y_true[mask], y_pred[mask])
+
                     print(f"Limb: {limb}",
                           f"Subject: {subject}",
                           f"Youden Index: {yi}",
@@ -394,8 +412,7 @@ def run_nested_cv_3a(window_size, X, y, subjects, limbs, architecture, hp_grid, 
                         'youden_index': yi,
                         'sensitivity': sens,
                         'specificity': spec,
-                        'hyperparameters': best_hp
-                    })
+                        'hyperparameters': best_hp})
 
     return pd.DataFrame(all_results)
 
@@ -506,6 +523,7 @@ def run_nested_cv_2(window_size, X, y, subjects, limbs, architecture, hp_grid, e
 
             best_score = -np.inf
             best_hp = None
+            best_model = None
             
             for hp_set in ParameterGrid(hp_grid):
                 model, encoder = build_autoencoder(architecture, hp_set,
@@ -535,68 +553,81 @@ def run_nested_cv_2(window_size, X, y, subjects, limbs, architecture, hp_grid, e
                 if val_score > best_score:
                     best_score = val_score
                     best_hp = hp_set
-                    print(f"New best HP found: with score: {best_score:.3f}")
-            
-            all_train_mask = subjects.isin(remaining_subjects)
-            X_all_train, y_all_train = X[all_train_mask], y[all_train_mask]
-            
-            X_all_train_w, y_all_train_w, _, _ = create_sliding_windows(X_all_train, 
-                                                                        y_all_train, 
-                                                                        subjects[all_train_mask], 
-                                                                        limbs[all_train_mask], 
-                                                                        None, 
-                                                                        window_size)
-
-            X_all_train_w1 = X_all_train_w[y_all_train_w == 1]
-            y_all_train_w1 = y_all_train_w[y_all_train_w == 1]
-
- 
-            model, encoder = build_autoencoder(architecture, 
-                                               best_hp, 
-                                               input_shape=(X_all_train_w1.shape[1], 
-                                                            X_all_train_w1.shape[2]), 
-                                               num_classes=1, 
-                                               class_loss=class_loss)
-            
+                    best_model = model
+                    #print(f"New best HP found: {hp_set}")
+        if plot_hist:
             history = train_model_without_class_loss(model, 
-                                                     X_all_train_w1, 
-                                                     X_all_train_w1, 
-                                                     epochs, 
-                                                     batch_size)
+                                                        X_train_class_1, 
+                                                        X_val_w, 
+                                                        epochs, 
+                                                        batch_size)
+            plot_training_history(history, False)
+                
+
+
             
-            all_train_errors = error_func(X_all_train_w, 
-                                          model.predict(X_all_train_w, verbose=0))
-            threshold = calculate_threshold(all_train_errors, y_all_train_w)
-            
-            X_test_w, y_test_w, test_subjects_w, test_limbs_w = create_sliding_windows(X_test, 
-                                                                                       y_test, 
-                                                                                       subjects[test_mask], 
-                                                                                       limbs[test_mask], 
-                                                                                       None, 
-                                                                                       window_size)
-            
-            test_errors = error_func(X_test_w, model.predict(X_test_w, verbose=0))
-            y_pred = (test_errors <= threshold).astype(int)
+
+        all_train_mask = subjects.isin(remaining_subjects)
+        X_all_train, y_all_train = X[all_train_mask], y[all_train_mask]
         
-            for limb in np.unique(test_limbs_w):
-                mask = test_limbs_w == limb
-                if np.sum(mask) > 0:
-                    sens, spec, yi = youden_index(y_test_w[mask], y_pred[mask])
-                    print(f'test yi: {yi}')
-                    best_hp_copy = best_hp.copy()
-                    best_hp_copy['kernel_init'] = best_hp['kernel_init'].__class__.__name__
-                    best_hp_copy['bias_init'] = best_hp['bias_init'].__class__.__name__
-                    result = {
-                                'subject': test_subject,
-                                'limb': limb,
-                                'youden_index': yi,
-                                'sensitivity': sens,
-                                'specificity': spec,
-                                'threshold': threshold,
-                                'val_subject': val_subject,
-                                'hyperparameters': best_hp_copy
-                             }
-                    all_results.append(result)
+        X_all_train_w, y_all_train_w, _, _ = create_sliding_windows(X_all_train, 
+                                                                    y_all_train, 
+                                                                    subjects[all_train_mask], 
+                                                                    limbs[all_train_mask], 
+                                                                    None, 
+                                                                    window_size)
+
+        X_all_train_w1 = X_all_train_w[y_all_train_w == 1]
+        y_all_train_w1 = y_all_train_w[y_all_train_w == 1]
+
+
+        model, encoder = build_autoencoder(architecture, 
+                                            best_hp, 
+                                            input_shape=(X_all_train_w1.shape[1], 
+                                                        X_all_train_w1.shape[2]), 
+                                            num_classes=1, 
+                                            class_loss=class_loss)
+        
+        history = train_model_without_class_loss(model, 
+                                                    X_all_train_w1, 
+                                                    X_all_train_w1, 
+                                                    epochs, 
+                                                    batch_size)
+        
+        
+        all_train_errors = error_func(X_all_train_w, 
+                                        model.predict(X_all_train_w, verbose=0))
+        threshold = calculate_threshold(all_train_errors, y_all_train_w)
+        
+        X_test_w, y_test_w, test_subjects_w, test_limbs_w = create_sliding_windows(X_test, 
+                                                                                    y_test, 
+                                                                                    subjects[test_mask], 
+                                                                                    limbs[test_mask], 
+                                                                                    None, 
+                                                                                    window_size)
+        
+        test_errors = error_func(X_test_w, model.predict(X_test_w, verbose=0))
+        
+        y_pred = (test_errors <= threshold).astype(int)
+    
+        for limb in np.unique(test_limbs_w):
+            mask = test_limbs_w == limb
+            if np.sum(mask) > 0:
+                sens, spec, yi = youden_index(y_test_w[mask], y_pred[mask])
+                best_hp_copy = best_hp.copy()
+                best_hp_copy['kernel_init'] = best_hp['kernel_init'].__class__.__name__
+                best_hp_copy['bias_init'] = best_hp['bias_init'].__class__.__name__
+                result = {
+                            'subject': test_subject,
+                            'limb': limb,
+                            'youden_index': yi,
+                            'sensitivity': sens,
+                            'specificity': spec,
+                            'threshold': threshold,
+                            'val_subject': val_subject,
+                            'hyperparameters': best_hp_copy
+                            }
+                all_results.append(result)
     
     return pd.DataFrame(all_results)
 
@@ -645,7 +676,7 @@ def validate_hyperparameters(X, y, subjects, limbs, window_size, architecture, h
             )
         
         if approach == 1:
-            y_pred = run_rf(encoder, X_train_w, X_val_w, y_train_w)
+            y_pred, rf_model = run_rf(encoder, X_train_w, X_val_w, y_train_w)
         elif approach == 2:
             if class_loss:
                 recon_train = error_func(X_train_w, 
@@ -664,7 +695,7 @@ def validate_hyperparameters(X, y, subjects, limbs, window_size, architecture, h
 
     mean_score = np.mean(scores)
     #print(f"Mean validation score: {mean_score:.3f}")
-    return mean_score
+    return mean_score, model, encoder, rf_model
 
 #function for hyperparameter validation for approach 3a
 def validate_hyperparameters_3a(X, y, subjects, limbs, window_size, architecture, hp, epochs,
@@ -869,7 +900,7 @@ def run_approach(window_size, X, y, subjects, limbs, architecture, hp, epochs, b
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
         
-        y_true, y_pred, test_subjects, test_limbs = process_fold(
+        y_true, y_pred, test_subjects, test_limbs, model, encoder, rf_model = process_fold(
             X_train, X_test, y_train, y_test, subjects, limbs, train_idx, test_idx,
             window_size, architecture, hp, epochs, batch_size, class_loss, plot_hist, approach, error_func)
         
@@ -893,5 +924,23 @@ def run_approach(window_size, X, y, subjects, limbs, architecture, hp, epochs, b
                     })
     
     return pd.DataFrame(all_results)
+
+import time
+
+
+def time_rf_inference_for_subject(n, X, y, subjects, limbs, encoder, rf_model, window_size):
+    test_idx = np.where(subjects == n)[0]
+    X_test = X.iloc[test_idx]
+    y_test = y.iloc[test_idx]
+
+    start_time = time.time()
+    X_test_w, y_test_w, subj_ids, limb_ids = create_sliding_windows(
+    X_test, y_test, subjects[test_idx], limbs[test_idx], None, window_size)
+    X_encoded = encoder.predict(X_test_w, verbose=0)
+    y_pred = rf_model.predict(X_encoded)
+    end_time = time.time()
+
+    inference_time = end_time - start_time
+    return y_test_w, y_pred, subj_ids, limb_ids, inference_time
 
 
